@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2016 Scirra Ltd.
+Copyright (c) 2017 Scirra Ltd.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
@@ -9,10 +9,13 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 */
 "use strict";
 
+importScripts("localforage.js");
+
 const OFFLINE_DATA_FILE = "offline.js";
 const CACHE_NAME_PREFIX = "offline";
 const BROADCASTCHANNEL_NAME = "offline";
 const CONSOLE_PREFIX = "[SW] ";
+const LAZYLOAD_KEYNAME = "sw-lazyload";
 
 // Create a BroadcastChannel if supported.
 const broadcastChannel = (typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(BROADCASTCHANNEL_NAME));
@@ -54,6 +57,19 @@ function BroadcastUpdateReady(version)
 		"version": version
 	});
 }
+
+function IsUrlInLazyLoadList(url, lazyLoadList)
+{
+	let scope = self.registration.scope;
+	
+	for (let lazyLoadUrl of lazyLoadList)
+	{
+		if (url.startsWith(new URL(lazyLoadUrl, scope).toString()))
+			return true;
+	}
+	
+	return false;
+};
 
 function GetCacheBaseName()
 {
@@ -149,7 +165,7 @@ function fetchWithBypass(request, bypassCache)
 	}
 };
 
-// Effectively a cache.addAll() that only creates the cache on all requests being successful (as an attempt at making it atomic)
+// Effectively a cache.addAll() that only creates the cache on all requests being successful (as a weak attempt at making it atomic)
 // and can optionally cache-bypass with fetchWithBypass in every request
 function CreateCacheFromFileList(cacheName, fileList, bypassCache)
 {
@@ -199,11 +215,18 @@ function UpdateCheck(isFirst)
 {
 	// Always bypass cache when requesting offline.js to make sure we find out about new versions.
 	return fetchWithBypass(OFFLINE_DATA_FILE, true)
-	.then(r => r.json())
+	.then(response =>
+	{
+		if (!response.ok)
+			throw new Error(OFFLINE_DATA_FILE + " responded with " + response.status + " " + response.statusText);
+		
+		return response.json();
+	})
 	.then(data =>
 	{
 		const version = data.version;
 		let fileList = data.fileList;
+		let lazyLoadList = data.lazyLoad;
 		const currentCacheName = GetCacheVersionName(version);
 		
 		return caches.has(currentCacheName)
@@ -251,7 +274,8 @@ function UpdateCheck(isFirst)
 				// update check caching will race with the normal page load requests. For any normal loading fetches that have already
 				// completed or are in-flight, it is wasteful to cache-bust the request for offline caching, since that
 				// forces a second network request to be issued when a response from the browser HTTP cache would be fine.
-				return CreateCacheFromFileList(currentCacheName, fileList, !isFirst)
+				return localforage.setItem(LAZYLOAD_KEYNAME, lazyLoadList)						// dump lazy load list to local storage
+				.then(() => CreateCacheFromFileList(currentCacheName, fileList, !isFirst))
 				.then(IsUpdatePending)
 				.then(isUpdatePending =>
 				{
@@ -328,8 +352,40 @@ self.addEventListener('fetch', event =>
 		}).then(useCacheName =>
 		{
 			return caches.open(useCacheName)
-			.then(c => c.match(event.request))
-			.then(response => response || fetch(event.request));
+			.then(cache =>
+			{
+				return cache.match(event.request)
+				.then(response =>
+				{
+					if (response)
+					{
+						return response;
+					}
+					else
+					{
+						// We need to check if this request is to be lazy-cached. Send the request and load the lazy-load list
+						// from storage simultaneously.
+						return Promise.all([fetch(event.request), localforage.getItem(LAZYLOAD_KEYNAME)])
+						.then(result =>
+						{
+							let response = result[0];
+							let lazyLoadList = result[1];
+							
+							if (IsUrlInLazyLoadList(event.request.url, lazyLoadList))
+							{
+								// Is in the lazy-load list: add to cache and return response
+								return cache.put(event.request, response.clone())		// note clone response since we also respond with it
+								.then(() => response);
+							}
+							else
+							{
+								// Not in lazy-load list: just return the response
+								return response;
+							}
+						});
+					}
+				});
+			});
 		});
 	});
 

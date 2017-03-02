@@ -8,23 +8,30 @@ Many thanks to Jake Archibald for putting up with endless questions and writing 
 
 ## Features
 
-- an external JSON file with a version number and list of URLs to cache (separating code and data, making updates smaller and quicker, never need to update the Service Worker itself, no special rules around updating)
+- an **external JSON file** with a version number and list of URLs to cache (separating code and data, making updates smaller and quicker, never need to update the Service Worker itself, no special rules around updating)
+- optional **paths to lazy-load** (where requests are not pre-cached, but are cached on first request)
 - implicit caching of the index page (no need to predict in the file list if it's index.html or main.aspx etc, also correctly handles query strings e.g. if main page is /?foo=bar)
 - offline-first (works offline; when online serves cache-first saving bandwidth; uncached responses default to network)
 - checks for updates in the background, identified by changing "version" field in the JSON file
-- cache-busting updates to avoid stale HTTP cache entries, but does not bypass on first cache to avoid duplicated requests
+- **cache-busting updates** to avoid stale HTTP cache entries, but does not bypass on first cache to avoid duplicated requests
 - avoids mixing resource versions in the same pageload (always sources from same cache; runs upgrade & cleanup on "navigate" requests with no other clients open)
 - attempts to handle updates in an atomic fashion to rule out partial caches (although the necessary API features to actually guarantee this are missing)
 - avoids conflicting with other caches on the same origin, even from this same library
-- vanilla JS with no further dependencies and no assumptions about your build/deployment methods (i.e. this repo is just a .js file)
+- vanilla JS no assumptions about your build/deployment methods (i.e. this repo is just a .js file) - but note it does depend on localforage for lazy-load storage
 - work with arbitrary server configurations, e.g. no need to specially configure caching on the Service Worker script or any other files (which cannot be specified anyway if you develop frameworks/middleware), no server-side scripts
 - update upon pressing the browser reload button (note support is inconsistent, see below)
-- sends messages over a BroadcastChannel indicating update events (e.g. downloading update, update ready) so pages can notify users accordingly
-- robust for production use - currently deployed for use in [Construct 2](https://www.scirra.com/) where it is getting battle-tested in a variety of environments.
+- **sends messages over a BroadcastChannel indicating update events** (e.g. downloading update, update ready) so pages can notify users accordingly
+- **robust for production use** - currently deployed for use in [Construct 2](https://www.scirra.com/) where it is getting battle-tested in a variety of environments.
+
+## Dependencies
+
+This script requires localforage.js in the same path. Get it from [LocalForage on Github](https://github.com/localForage/localForage)
+
+Localforage is used as a simple way to store the lazy-load paths so they can be accessed in fetch events.
 
 ## How to use it
 
-Copy `sw.js` to the same folder as your index page, and install the service worker from a script like this:
+Copy `sw.js` (and `localforage.js` if you don't already use it) to the same folder as your index page, and install the service worker from a script like this:
 
 ```
 navigator.serviceWorker.register("sw.js", { scope: "./" });
@@ -45,11 +52,17 @@ This is basically a JSON file with a list of static resources to cache and a ver
 	"fileList": [
 		"info.txt",
 		"image.png"
+	],
+	"lazyLoad": [
+		"myPath/",
+		"myOtherPath/"
 	]
 }
 ```
 
 Note both the detected main page URL and the root `/` path are implicitly cached. For example if you visit `https://example.com/foo/index.html`, then both `index.html` and `/` (corresponding to `https://example.com/foo/`) are added to the cache without having to specify them in the file list.
+
+Any requests made under any of the `lazyLoad` paths are not cached up-front, but are cached the first time they are fetched. This is useful for large optional files, such as templates or examples in an editor app.
 
 To issue an update, update the files as normal then change the `"version"` field (which can be any arbitrary number, e.g. a timestamp). Note the version field does not need to actually increase, it only looks for a different version number to one it's seen before, however obviously this should be different for every update and not re-use old values.
 
