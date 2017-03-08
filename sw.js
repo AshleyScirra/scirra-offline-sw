@@ -182,7 +182,7 @@ function CreateCacheFromFileList(cacheName, fileList, bypassCache)
 			if (!response.ok)
 			{
 				allOk = false;
-				console.error(CONSOLE_PREFIX + "Error fetching '" + originalUrl + "' (" + response.status + " " + response.statusText + ")");
+				console.error(CONSOLE_PREFIX + "Error fetching '" + url + "' (" + response.status + " " + response.statusText + ")");
 			}
 		}
 		
