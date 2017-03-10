@@ -1,8 +1,6 @@
 # scirra-offline-sw
 
-This is a Service Worker script for offline support used for Construct 2 games, although it should work well for any web content with a static list of files that need to work offline-first. It aims to be a basic replacement for AppCache, but with a simpler JSON-based file list format.
-
-I found this [pretty difficult to implement](https://www.scirra.com/blog/ashley/27/service-workers-are-a-pain-in-the-ass) so hopefully it is helpful to others. Admittedly a lot of the development time was figuring out how Service Worker and the related APIs really work and how to work with it rather than against it, but I think the SW development experience is still pretty miserable which made it worse (especially considering some super-confusing bugs like Chrome's downright misleading console logging). Also some people advocate things like pasting data in to your SW script which violates the principle of separation of code and data and can cause a bunch of other problems (e.g. the special rules around SW script updates now apply to your data as well, even if you don't want that). It's easy to end up down a dead-end and have to rewrite code with a new approach. I did that several times over! This version appears to work well now though.
+This is a Service Worker script for offline support used for Construct 2 and Construct 3. It supports up-front and lazy caching of static resources for offline use. It aims to work like a better AppCache with a simpler JSON-based file list format.
 
 Many thanks to Jake Archibald for putting up with endless questions and writing some code that influenced the design of this version. I doubt I could have done it without him!
 
@@ -17,11 +15,11 @@ Many thanks to Jake Archibald for putting up with endless questions and writing 
 - avoids mixing resource versions in the same pageload (always sources from same cache; runs upgrade & cleanup on "navigate" requests with no other clients open)
 - attempts to handle updates in an atomic fashion to rule out partial caches (although the necessary API features to actually guarantee this are missing)
 - avoids conflicting with other caches on the same origin, even from this same library
-- vanilla JS no assumptions about your build/deployment methods (i.e. this repo is just a .js file) - but note it does depend on localforage for lazy-load storage
+- vanilla JS with no assumptions about your build/deployment methods (i.e. this repo is just a .js file) - but note it does depend on localforage for lazy-load storage
 - work with arbitrary server configurations, e.g. no need to specially configure caching on the Service Worker script or any other files (which cannot be specified anyway if you develop frameworks/middleware), no server-side scripts
 - update upon pressing the browser reload button (note support is inconsistent, see below)
 - **sends messages over a BroadcastChannel indicating update events** (e.g. downloading update, update ready) so pages can notify users accordingly
-- **robust for production use** - currently deployed for use in [Construct 2](https://www.scirra.com/) where it is getting battle-tested in a variety of environments.
+- **robust for production use** - deployed with [Construct 2](https://www.scirra.com/) where it has been battle-tested in a variety of environments, and also used for the Construct 3 editor itself.
 
 ## Dependencies
 
