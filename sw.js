@@ -16,6 +16,7 @@ const CACHE_NAME_PREFIX = "offline";
 const BROADCASTCHANNEL_NAME = "offline";
 const CONSOLE_PREFIX = "[SW] ";
 const LAZYLOAD_KEYNAME = "sw-lazyload";
+const UPDATE_CHECK_ON_FILE = "";				// empty = check on navigate fetch, otherwise check when this filename is requested
 
 // Create a BroadcastChannel if supported.
 const broadcastChannel = (typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(BROADCASTCHANNEL_NAME));
@@ -56,6 +57,28 @@ function BroadcastUpdateReady(version)
 		"type": "update-ready",
 		"version": version
 	});
+}
+
+// https://example.com/path/file.ext -> file.ext
+function GetFilenameFromURL(url)
+{
+	if (!url)
+		return url;		// empty string
+	
+	const lastCh = url.charAt(url.length - 1);
+	
+	if (lastCh === "/" || lastCh === "\\")
+		return "";		// already terminated by /, file part is empty
+	
+	const last_slash = url.lastIndexOf("/");
+	
+	if (last_slash === -1)
+		last_slash = url.lastIndexOf("\\");
+	
+	if (last_slash === -1)
+		return url;		// neither slash found, assume whole path is filename (e.g. "file.ext" returns "file.ext")
+	
+	return url.substr(last_slash + 1);
 }
 
 function IsUrlInLazyLoadList(url, lazyLoadList)
@@ -313,7 +336,12 @@ self.addEventListener('install', event =>
 
 self.addEventListener('fetch', event =>
 {
-	const isNavigateRequest = (event.request.mode === "navigate");
+	// There are two ways an update check is kicked off:
+	// 1) UPDATE_CHECK_ON_FILE is empty: default to update checking on navigate requests
+	// 2) UPDATE_CHECK_ON_FILE is set: do an update check when the filename part of the URL matches it
+	const doUpdateCheck = (UPDATE_CHECK_ON_FILE ?
+							GetFilenameFromURL(event.request.url) === UPDATE_CHECK_ON_FILE :
+							event.request.mode === "navigate");
 	
 	let responsePromise = GetAvailableCacheNames()
 	.then(availableCacheNames =>
@@ -328,7 +356,7 @@ self.addEventListener('fetch', event =>
 			// Prefer the oldest cache available. This avoids mixed-version responses by ensuring that if a new cache
 			// is created and filled due to an update check while the page is running, we keep returning resources
 			// from the original (oldest) cache only.
-			if (availableCacheNames.length === 1 || !isNavigateRequest)
+			if (availableCacheNames.length === 1 || !doUpdateCheck)
 				return availableCacheNames[0];
 			
 			// We are making a navigate request with more than one cache available. Check if we can expire any old ones.
@@ -389,7 +417,7 @@ self.addEventListener('fetch', event =>
 		});
 	});
 
-	if (isNavigateRequest)
+	if (doUpdateCheck)
 	{
 		// allow the main request to complete, then check for updates
 		event.waitUntil(responsePromise
