@@ -120,6 +120,18 @@ function GetAvailableCacheNames()
 	});
 };
 
+function GetNumberOfClientsOnReload()
+{
+	const ua = navigator.userAgent;
+	const isEdge = /edge\//i.test(ua);
+	const isChrome = (/chrome/i.test(ua) || /chromium/i.test(ua)) && !isEdge;
+	
+	// Chrome quirk: in a navigate fetch to reload the page, clients.matchAll() returns 2 clients
+	// (the old and the new). In Firefox, it returns 1. It's not clear which is the correct answer.
+	// TODO: find a less hacky way to solve this.
+	return isChrome ? 2 : 1;
+};
+
 // Identify if an update is pending, which is the case when we have 2 or more available caches.
 // One must be an update that is waiting, since the next navigate that does an upgrade will
 // delete all the old caches leaving just one currently-in-use cache.
@@ -364,9 +376,7 @@ self.addEventListener('fetch', event =>
 			{
 				// If there are other clients open, don't expire anything yet. We don't want to delete any caches they
 				// might be using, which could cause mixed-version responses.
-				// TODO: verify client count is as expected in navigate requests.
-				// TODO: find a way to upgrade on reloading the only client. Chrome seems to think there are 2 clients in that case.
-				if (clients.length > 1)
+				if (clients.length > GetNumberOfClientsOnReload())		// note browser differences here
 					return availableCacheNames[0];
 				
 				// Identify newest cache to use. Delete all the others.

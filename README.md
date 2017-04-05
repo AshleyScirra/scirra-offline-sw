@@ -17,7 +17,7 @@ Many thanks to Jake Archibald for putting up with endless questions and writing 
 - avoids conflicting with other caches on the same origin, even from this same library
 - vanilla JS with no assumptions about your build/deployment methods (i.e. this repo is just a .js file) - but note it does depend on localforage for lazy-load storage
 - work with arbitrary server configurations, e.g. no need to specially configure caching on the Service Worker script or any other files (which cannot be specified anyway if you develop frameworks/middleware), no server-side scripts
-- update upon pressing the browser reload button (note support is inconsistent, see below)
+- update upon pressing the browser reload button (note this is a bit hacky, see below)
 - **sends messages over a BroadcastChannel indicating update events** (e.g. downloading update, update ready) so pages can notify users accordingly
 - **robust for production use** - deployed with [Construct 2](https://www.scirra.com/) where it has been battle-tested in a variety of environments, and also used for the Construct 3 editor itself.
 
@@ -96,7 +96,7 @@ There is a caveat with this: the SW can generate messages before the page has lo
 ## Implementation notes / TODOs
 
 - writing the cache is not technically atomic, although in practice it should be OK. Caching waits for all requests to complete successfully before opening the cache and writing everything in one go, so an incomplete cache lasts for as short a time as possible. However if the SW is for some reason terminated during that writing, an incomplete cache will be left behind and offline support will not work correctly. SW does not yet have the necessary features to do this writing atomically, but apparently there is some spec work being done on this. TODO: make cache writing atomic when possible.
-- update-on-reload is inconsistent: Chrome requires that all browser windows are closed and reopened before it updates to a newly downloaded version, whereas Firefox can update to a new version by pressing the browser 'reload' button. This comes down to inconsistencies in how many clients are reported in a "navigate" request. I think spec work is being done to clarify this. This may need to be changed in future to support update-on-reload if Firefox aligns with Chrome rather than the other way round. TODO: make update-on-reload consistent across browsers.
+- update-on-reload is hacky: Chrome reports 2 clients present when reloading, but Firefox reports 1, so we've had to resort to user agent string inspection to decide when to update.
 - support for cache-busting fetches is hacked in with random query string parameters since Chrome does not yet support fetch cache control options ([crbug.com/453190](https://crbug.com/453190)). TODO: remove the query string hack when cache control options supported.
 - BroadcastChannel messages are delayed by 3 seconds as a hack to try to make sure the client is listening. TODO: use a per-client message buffer and clients should tell the SW when they are ready to receive messages, guaranteeing clients receive all their messages with no unnecessary delay.
 - this has not yet been tested against any SW implementations other than Chrome and Firefox. Notably Microsoft are working on an implementation in Edge which should be tested.
