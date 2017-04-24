@@ -83,6 +83,9 @@ function GetFilenameFromURL(url)
 
 function IsUrlInLazyLoadList(url, lazyLoadList)
 {
+	if (!lazyLoadList)
+		return false;		// presumably lazy load list failed to load
+	
 	let scope = self.registration.scope;
 	
 	for (let lazyLoadUrl of lazyLoadList)
