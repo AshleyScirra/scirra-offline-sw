@@ -19,17 +19,17 @@ Many thanks to Jake Archibald for putting up with endless questions and writing 
 - work with arbitrary server configurations, e.g. no need to specially configure caching on the Service Worker script or any other files (which cannot be specified anyway if you develop frameworks/middleware), no server-side scripts
 - update upon pressing the browser reload button (note this is a bit hacky, see below)
 - **sends messages over a BroadcastChannel indicating update events** (e.g. downloading update, update ready) so pages can notify users accordingly
-- **robust for production use** - deployed with [Construct 2](https://www.scirra.com/) where it has been battle-tested in a variety of environments, and also used for the Construct 3 editor itself.
+- **robust for production use** - deployed with [Construct 2](https://www.scirra.com/) where it has been battle-tested in a variety of environments, and also used for the [Construct 3 editor](https://editor.construct.net) itself.
 
 ## Dependencies
 
-This script requires localforage.js in the same path. Get it from [LocalForage on Github](https://github.com/localForage/localForage)
+This script requires localforage.js in the same path for the lazy-loading feature to work. Get it from [LocalForage on Github](https://github.com/localForage/localForage)
 
-Localforage is used as a simple way to store the lazy-load paths so they can be accessed in fetch events.
+You will need to uncomment the `importScripts("localforage.js")` call at the top of the script to enable using localforage. It's optional and will simply disable the lazy load feature if it is missing. localforage is necessary to permanently remember the list of paths to lazy-load.
 
 ## How to use it
 
-Copy `sw.js` (and `localforage.js` if you don't already use it) to the same folder as your index page, and install the service worker from a script like this:
+Copy `sw.js` (and `localforage.js` if you use lazy loading) to the same folder as your index page, and install the service worker from a script like this:
 
 ```
 navigator.serviceWorker.register("sw.js", { scope: "./" });
@@ -60,7 +60,7 @@ This is basically a JSON file with a list of static resources to cache and a ver
 
 Note both the detected main page URL and the root `/` path are implicitly cached. For example if you visit `https://example.com/foo/index.html`, then both `index.html` and `/` (corresponding to `https://example.com/foo/`) are added to the cache without having to specify them in the file list.
 
-Any requests made under any of the `lazyLoad` paths are not cached up-front, but are cached the first time they are fetched. This is useful for large optional files, such as templates or examples in an editor app.
+Any requests with a URL that matches any RegExp string in the `lazyLoad` paths are not cached up-front, but are cached the first time they are fetched. This is useful for large optional files, such as templates or examples in an editor app.
 
 To issue an update, update the files as normal then change the `"version"` field (which can be any arbitrary number, e.g. a timestamp). Note the version field does not need to actually increase, it only looks for a different version number to one it's seen before, however obviously this should be different for every update and not re-use old values.
 
@@ -99,7 +99,7 @@ There is a caveat with this: the SW can generate messages before the page has lo
 - update-on-reload is hacky: Chrome reports 2 clients present when reloading, but Firefox reports 1, so we've had to resort to user agent string inspection to decide when to update.
 - support for cache-busting fetches is hacked in with random query string parameters since Chrome does not yet support fetch cache control options ([crbug.com/453190](https://crbug.com/453190)). TODO: remove the query string hack when cache control options supported.
 - BroadcastChannel messages are delayed by 3 seconds as a hack to try to make sure the client is listening. TODO: use a per-client message buffer and clients should tell the SW when they are ready to receive messages, guaranteeing clients receive all their messages with no unnecessary delay.
-- this has not yet been tested against any SW implementations other than Chrome and Firefox. Notably Microsoft are working on an implementation in Edge which should be tested.
+- this has not yet been tested against any SW implementations other than Chrome and Firefox. Notably Microsoft and Apple are working on implementations for Edge and Safari which should be tested.
 
 Service Workers still need spec work and browsers need various bug fixes/additions to fulfil the above list.
 

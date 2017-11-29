@@ -9,14 +9,18 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 */
 "use strict";
 
-importScripts("localforage.js");
+// Add localforage and uncomment to enable lazy loading list
+//importScripts("localforage.js");
 
 const OFFLINE_DATA_FILE = "offline.js";
 const CACHE_NAME_PREFIX = "offline";
 const BROADCASTCHANNEL_NAME = "offline";
 const CONSOLE_PREFIX = "[SW] ";
-const LAZYLOAD_KEYNAME = "sw-lazyload";
-const UPDATE_CHECK_ON_FILE = "";				// empty = check on navigate fetch, otherwise check when this filename is requested
+const LAZYLOAD_KEYNAME = "offline-lazyload";
+
+// Optional additional cache cleanup when upgrading
+const ALSO_CLEANUP_CACHE_NAME_PREFIX = "";		// cache name prefix to also clean up
+const ALSO_CLEANUP_KEEP_COUNT = 10;				// keep last N versions
 
 // Create a BroadcastChannel if supported.
 const broadcastChannel = (typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(BROADCASTCHANNEL_NAME));
@@ -32,7 +36,6 @@ function PostBroadcastMessage(o)
 	// Note we could remove the delay on some messages, but then we create a race condition where sometimes messages can arrive
 	// in the wrong order (e.g. "update ready" arrives before "started downloading update"). So to keep the consistent ordering,
 	// delay all messages by the same amount.
-	// TODO: implement a proper message queue per-client and let clients tell the SW when they're ready to get messages.
 	setTimeout(() => broadcastChannel.postMessage(o), 3000);
 };
 
@@ -59,42 +62,40 @@ function BroadcastUpdateReady(version)
 	});
 }
 
-// https://example.com/path/file.ext -> file.ext
-function GetFilenameFromURL(url)
-{
-	if (!url)
-		return url;		// empty string
-	
-	const lastCh = url.charAt(url.length - 1);
-	
-	if (lastCh === "/" || lastCh === "\\")
-		return "";		// already terminated by /, file part is empty
-	
-	const last_slash = url.lastIndexOf("/");
-	
-	if (last_slash === -1)
-		last_slash = url.lastIndexOf("\\");
-	
-	if (last_slash === -1)
-		return url;		// neither slash found, assume whole path is filename (e.g. "file.ext" returns "file.ext")
-	
-	return url.substr(last_slash + 1);
-}
-
 function IsUrlInLazyLoadList(url, lazyLoadList)
 {
 	if (!lazyLoadList)
 		return false;		// presumably lazy load list failed to load
 	
-	let scope = self.registration.scope;
-	
-	for (let lazyLoadUrl of lazyLoadList)
+	try {
+		for (const lazyLoadRegex of lazyLoadList)
+		{
+			if (new RegExp(lazyLoadRegex).test(url))
+				return true;
+		}
+	}
+	catch (err)
 	{
-		if (url.startsWith(new URL(lazyLoadUrl, scope).toString()))
-			return true;
+		console.error(CONSOLE_PREFIX + "Error matching in lazy-load list: ", err);
 	}
 	
 	return false;
+};
+
+function WriteLazyLoadListToStorage(lazyLoadList)
+{
+	if (typeof localforage === "undefined" || !lazyLoadList)
+		return Promise.resolve();		// bypass if localforage not imported or nothing to write
+	else
+		return localforage.setItem(LAZYLOAD_KEYNAME, lazyLoadList)
+};
+
+function ReadLazyLoadListFromStorage()
+{
+	if (typeof localforage === "undefined")
+		return Promise.resolve([]);		// bypass if localforage not imported
+	else
+		return localforage.getItem(LAZYLOAD_KEYNAME);
 };
 
 function GetCacheBaseName()
@@ -113,14 +114,33 @@ function GetCacheVersionName(version)
 
 // Return caches.keys() filtered down to just caches we're interested in (with the right base name).
 // This filters out caches from unrelated scopes.
-function GetAvailableCacheNames()
+async function GetAvailableCacheNames()
 {
-	return caches.keys()
-	.then(cacheNames =>
-	{
-		const cacheBaseName = GetCacheBaseName();
-		return cacheNames.filter(n => n.startsWith(cacheBaseName));
-	});
+	const cacheNames = await caches.keys();
+	const cacheBaseName = GetCacheBaseName();
+	return cacheNames.filter(n => n.startsWith(cacheBaseName));
+};
+
+// If ALSO_CLEANUP_CACHE_NAME_PREFIX is set, return a list of cache names to also clean up when upgrading.
+// This is so a secondary version-scoped SW can also clean up its caches when the root upgrades.
+// Since the caches are stored oldest-first, we can simply slice off the first entries.
+async function GetAdditionalCacheNamesToDelete()
+{
+	const prefix = ALSO_CLEANUP_CACHE_NAME_PREFIX;
+	
+	if (!prefix)
+		return [];			// no additional cache name to cleanup
+	
+	const cacheNames = await caches.keys();
+	const matchingCacheNames = cacheNames.filter(n => n.startsWith(prefix));
+	
+	// If there aren't more caches than the number to keep, there's nothing to delete.
+	const keepCount = ALSO_CLEANUP_KEEP_COUNT;
+	if (matchingCacheNames.length <= keepCount)
+		return [];
+	
+	// Otherwise return the list of the oldest set of caches beyond the keep count to delete.
+	return matchingCacheNames.slice(0, -keepCount);
 };
 
 function GetNumberOfClientsOnReload()
@@ -138,42 +158,40 @@ function GetNumberOfClientsOnReload()
 // Identify if an update is pending, which is the case when we have 2 or more available caches.
 // One must be an update that is waiting, since the next navigate that does an upgrade will
 // delete all the old caches leaving just one currently-in-use cache.
-function IsUpdatePending()
+async function IsUpdatePending()
 {
-	return GetAvailableCacheNames()
-	.then(availableCacheNames => availableCacheNames.length >= 2);
+	const availableCacheNames = await GetAvailableCacheNames();
+	return (availableCacheNames.length >= 2);
 };
 
 // Automatically deduce the main page URL (e.g. index.html or main.aspx) from the available browser windows.
 // This prevents having to hard-code an index page in the file list, implicitly caching it like AppCache did.
-function GetMainPageUrl()
+async function GetMainPageUrl()
 {
-	return clients.matchAll({
+	const allClients = await clients.matchAll({
 		includeUncontrolled: true,
 		type: "window"
-	})
-	.then(clients =>
-	{
-		for (let c of clients)
-		{
-			// Parse off the scope from the full client URL, e.g. https://example.com/index.html -> index.html
-			let url = c.url;
-			if (url.startsWith(self.registration.scope))
-				url = url.substring(self.registration.scope.length);
-			
-			if (url && url !== "/")		// ./ is also implicitly cached so don't bother returning that
-			{
-				// If the URL is solely a search string, prefix it with / to ensure it caches correctly.
-				// e.g. https://example.com/?foo=bar needs to cache as /?foo=bar, not just ?foo=bar.
-				if (url.startsWith("?"))
-					url = "/" + url;
-				
-				return url;
-			}
-		}
-		
-		return "";		// no main page URL could be identified
 	});
+	
+	for (const c of allClients)
+	{
+		// Parse off the scope from the full client URL, e.g. https://example.com/index.html -> index.html
+		let url = c.url;
+		if (url.startsWith(self.registration.scope))
+			url = url.substring(self.registration.scope.length);
+		
+		if (url && url !== "/")		// ./ is also implicitly cached so don't bother returning that
+		{
+			// If the URL is solely a search string, prefix it with / to ensure it caches correctly.
+			// e.g. https://example.com/?foo=bar needs to cache as /?foo=bar, not just ?foo=bar.
+			if (url.startsWith("?"))
+				url = "/" + url;
+			
+			return url;
+		}
+	}
+	
+	return "";		// no main page URL could be identified
 };
 
 // Hack to fetch optionally bypassing HTTP cache until fetch cache options are supported in Chrome (crbug.com/453190)
@@ -205,140 +223,128 @@ function fetchWithBypass(request, bypassCache)
 
 // Effectively a cache.addAll() that only creates the cache on all requests being successful (as a weak attempt at making it atomic)
 // and can optionally cache-bypass with fetchWithBypass in every request
-function CreateCacheFromFileList(cacheName, fileList, bypassCache)
+async function CreateCacheFromFileList(cacheName, fileList, bypassCache)
 {
 	// Kick off all requests and wait for them all to complete
-	return Promise.all(fileList.map(url => fetchWithBypass(url, bypassCache)))
-	.then(responses =>
-	{
-		// Check if any request failed. If so don't move on to opening the cache.
-		// This makes sure we only open a cache if all requests succeeded.
-		let allOk = true;
-		
-		for (let response of responses)
-		{
-			if (!response.ok)
-			{
-				allOk = false;
-				console.error(CONSOLE_PREFIX + "Error fetching '" + response.url + "' (" + response.status + " " + response.statusText + ")");
-			}
-		}
-		
-		if (!allOk)
-			throw new Error("not all resources were fetched successfully");
-		
-		// Can now assume all responses are OK. Open a cache and write all responses there.
-		// TODO: ideally we can do this transactionally to ensure a complete cache is written as one atomic operation.
-		// This needs either new transactional features in the spec, or at the very least a way to rename a cache
-		// (so we can write to a temporary name that won't be returned by GetAvailableCacheNames() and then rename it when ready).
-		return caches.open(cacheName)
-		.then(cache =>
-		{
-			return Promise.all(responses.map(
-				(response, i) => cache.put(fileList[i], response)
-			));
-		})
-		.catch(err =>
-		{
-			// Not sure why cache.put() would fail (maybe if storage quota exceeded?) but in case it does,
-			// clean up the cache to try to avoid leaving behind an incomplete cache.
-			console.error(CONSOLE_PREFIX + "Error writing cache entries: ", err);
-			caches.delete(cacheName);
-			throw err;
-		});
-	});
-};
-
-function UpdateCheck(isFirst)
-{
-	// Always bypass cache when requesting offline.js to make sure we find out about new versions.
-	return fetchWithBypass(OFFLINE_DATA_FILE, true)
-	.then(response =>
+	const responses = await Promise.all(fileList.map(url => fetchWithBypass(url, bypassCache)));
+	
+	// Check if any request failed. If so don't move on to opening the cache.
+	// This makes sure we only open a cache if all requests succeeded.
+	let allOk = true;
+	
+	for (const response of responses)
 	{
 		if (!response.ok)
-			throw new Error(OFFLINE_DATA_FILE + " responded with " + response.status + " " + response.statusText);
-		
-		return response.json();
-	})
-	.then(data =>
+		{
+			allOk = false;
+			console.error(CONSOLE_PREFIX + "Error fetching '" + response.url + "' (" + response.status + " " + response.statusText + ")");
+		}
+	}
+	
+	if (!allOk)
+		throw new Error("not all resources were fetched successfully");
+	
+	// Can now assume all responses are OK. Open a cache and write all responses there.
+	// TODO: ideally we can do this transactionally to ensure a complete cache is written as one atomic operation.
+	// This needs either new transactional features in the spec, or at the very least a way to rename a cache
+	// (so we can write to a temporary name that won't be returned by GetAvailableCacheNames() and then rename it when ready).
+	const cache = await caches.open(cacheName);
+	
+	try {
+		return await Promise.all(responses.map(
+			(response, i) => cache.put(fileList[i], response)
+		));
+	}
+	catch (err)
 	{
+		// Not sure why cache.put() would fail (maybe if storage quota exceeded?) but in case it does,
+		// clean up the cache to try to avoid leaving behind an incomplete cache.
+		console.error(CONSOLE_PREFIX + "Error writing cache entries: ", err);
+		caches.delete(cacheName);
+		throw err;
+	}
+};
+
+async function UpdateCheck(isFirst)
+{
+	try {
+		// Always bypass cache when requesting offline.js to make sure we find out about new versions.
+		const response = await fetchWithBypass(OFFLINE_DATA_FILE, true);
+		
+		if (!response.ok)
+			throw new Error(OFFLINE_DATA_FILE + " responded with " + response.status + " " + response.statusText);
+			
+		const data = await response.json();
+		
 		const version = data.version;
-		let fileList = data.fileList;
-		let lazyLoadList = data.lazyLoad;
+		const fileList = data.fileList;
+		const lazyLoadList = data.lazyLoad;
 		const currentCacheName = GetCacheVersionName(version);
 		
-		return caches.has(currentCacheName)
-		.then(cacheExists =>
+		const cacheExists = await caches.has(currentCacheName);
+
+		// Don't recache if there is already a cache that exists for this version. Assume it is complete.
+		if (cacheExists)
 		{
-			// Don't recache if there is already a cache that exists for this version. Assume it is complete.
-			if (cacheExists)
+			// Log whether we are up-to-date or pending an update.
+			const isUpdatePending = await IsUpdatePending();
+			if (isUpdatePending)
 			{
-				// Determine whether we are up-to-date or pending an update.
-				return IsUpdatePending()
-				.then(isUpdatePending =>
-				{
-					if (isUpdatePending)
-					{
-						console.log(CONSOLE_PREFIX + "Update pending");
-						Broadcast("update-pending");
-					}
-					else
-					{
-						console.log(CONSOLE_PREFIX + "Up to date");
-						Broadcast("up-to-date");
-					}
-				});
+				console.log(CONSOLE_PREFIX + "Update pending");
+				Broadcast("update-pending");
 			}
-			
-			// Implicitly add the main page URL to the file list, e.g. "index.html", so we don't have to assume a specific name.
-			return GetMainPageUrl()
-			.then(mainPageUrl =>
+			else
 			{
-				// Prepend the main page URL to the file list if we found one and it is not already in the list.
-				// Also make sure we request the base / which should serve the main page.
-				fileList.unshift("./");
-				
-				if (mainPageUrl && fileList.indexOf(mainPageUrl) === -1)
-					fileList.unshift(mainPageUrl);
-				
-				console.log(CONSOLE_PREFIX + "Caching " + fileList.length + " files for offline use");
-				
-				if (isFirst)
-					Broadcast("downloading");
-				else
-					BroadcastDownloadingUpdate(version);
-				
-				// Note we don't bypass the cache on the first update check. This is because SW installation and the following
-				// update check caching will race with the normal page load requests. For any normal loading fetches that have already
-				// completed or are in-flight, it is wasteful to cache-bust the request for offline caching, since that
-				// forces a second network request to be issued when a response from the browser HTTP cache would be fine.
-				return localforage.setItem(LAZYLOAD_KEYNAME, lazyLoadList)						// dump lazy load list to local storage
-				.then(() => CreateCacheFromFileList(currentCacheName, fileList, !isFirst))
-				.then(IsUpdatePending)
-				.then(isUpdatePending =>
-				{
-					if (isUpdatePending)
-					{
-						console.log(CONSOLE_PREFIX + "All resources saved, update ready");
-						BroadcastUpdateReady(version);
-					}
-					else
-					{
-						console.log(CONSOLE_PREFIX + "All resources saved, offline support ready");
-						Broadcast("offline-ready");
-					}
-				});
-			});
-		});
-	})
-	.catch(err =>
+				console.log(CONSOLE_PREFIX + "Up to date");
+				Broadcast("up-to-date");
+			}
+			return;
+		}
+		
+		// Implicitly add the main page URL to the file list, e.g. "index.html", so we don't have to assume a specific name.
+		const mainPageUrl = await GetMainPageUrl();
+		
+		// Prepend the main page URL to the file list if we found one and it is not already in the list.
+		// Also make sure we request the base / which should serve the main page.
+		fileList.unshift("./");
+		
+		if (mainPageUrl && fileList.indexOf(mainPageUrl) === -1)
+			fileList.unshift(mainPageUrl);
+		
+		console.log(CONSOLE_PREFIX + "Caching " + fileList.length + " files for offline use");
+		
+		if (isFirst)
+			Broadcast("downloading");
+		else
+			BroadcastDownloadingUpdate(version);
+		
+		// Note we don't bypass the cache on the first update check. This is because SW installation and the following
+		// update check caching will race with the normal page load requests. For any normal loading fetches that have already
+		// completed or are in-flight, it is pointless and wasteful to cache-bust the request for offline caching, since that
+		// forces a second network request to be issued when a response from the browser HTTP cache would be fine.
+		await WriteLazyLoadListToStorage(lazyLoadList);						// dump lazy load list to local storage
+		await CreateCacheFromFileList(currentCacheName, fileList, !isFirst);
+		const isUpdatePending = await IsUpdatePending();
+		
+		if (isUpdatePending)
+		{
+			console.log(CONSOLE_PREFIX + "All resources saved, update ready");
+			BroadcastUpdateReady(version);
+		}
+		else
+		{
+			console.log(CONSOLE_PREFIX + "All resources saved, offline support ready");
+			Broadcast("offline-ready");
+		}
+	}
+	catch (err)
 	{
 		// Update check fetches fail when we're offline, but in case there's any other kind of problem with it, log a warning.
 		console.warn(CONSOLE_PREFIX + "Update check failed: ", err);
-	});
+	}
 };
 
-self.addEventListener('install', event =>
+self.addEventListener("install", event =>
 {
 	// On install kick off an update check to cache files on first use.
 	// If it fails we can still complete the install event and leave the SW running, we'll just
@@ -349,92 +355,104 @@ self.addEventListener('install', event =>
 	);
 });
 
-self.addEventListener('fetch', event =>
+self.addEventListener("activate", event =>
 {
-	// There are two ways an update check is kicked off:
-	// 1) UPDATE_CHECK_ON_FILE is empty: default to update checking on navigate requests
-	// 2) UPDATE_CHECK_ON_FILE is set: do an update check when the filename part of the URL matches it
-	const doUpdateCheck = (UPDATE_CHECK_ON_FILE ?
-							GetFilenameFromURL(event.request.url) === UPDATE_CHECK_ON_FILE :
-							event.request.mode === "navigate");
+	// Upon activating, if a lazy-load list is used, claim all clients. This is so we can start caching anything
+	// in the lazy load list on the first run, after install finishes. Unfortunately we won't cache anything fetched
+	// before this activate event, but at least all fetches after that on first run can be lazy cached.
+	event.waitUntil(
+		ReadLazyLoadListFromStorage()
+		.then(lazyLoadList =>
+		{
+			if (lazyLoadList && lazyLoadList.length)
+				return clients.claim();
+		})
+	);
+});
+
+async function GetCacheNameToUse(availableCacheNames, doUpdateCheck)
+{
+	// Prefer the oldest cache available. This avoids mixed-version responses by ensuring that if a new cache
+	// is created and filled due to an update check while the page is running, we keep returning resources
+	// from the original (oldest) cache only.
+	if (availableCacheNames.length === 1 || !doUpdateCheck)
+		return availableCacheNames[0];
 	
-	let responsePromise = GetAvailableCacheNames()
-	.then(availableCacheNames =>
-	{
-		// No caches available: go to network
-		if (!availableCacheNames.length)
-			return fetch(event.request);
+	// We are making a navigate request with more than one cache available. Check if we can expire any old ones.
+	const allClients = await clients.matchAll();
+	
+	// If there are other clients open, don't expire anything yet. We don't want to delete any caches they
+	// might be using, which could cause mixed-version responses.
+	if (allClients.length > GetNumberOfClientsOnReload())		// note browser differences here
+		return availableCacheNames[0];
+	
+	// Identify newest cache to use. Delete all the other caches. If specified, find another set of caches
+	// to also delete, and add them to the list of caches to clean up.
+	const latestCacheName = availableCacheNames[availableCacheNames.length - 1];
+	let deleteCacheNames = availableCacheNames.slice(0, -1);
+	const additionalDeleteCacheNames = await GetAdditionalCacheNamesToDelete();
+	deleteCacheNames.push(...additionalDeleteCacheNames);
+	deleteCacheNames = [...new Set(deleteCacheNames)];		// remove any duplicates
+	
+	console.log(CONSOLE_PREFIX + "Updating to new version");
+	
+	await Promise.all(
+		deleteCacheNames.map(c => caches.delete(c))
+	);
+	
+	return latestCacheName;
+};
+
+async function HandleFetch(event, doUpdateCheck)
+{
+	const availableCacheNames = await GetAvailableCacheNames();
+	
+	// No caches available: go to network
+	if (!availableCacheNames.length)
+		return fetch(event.request);
+	
+	const useCacheName = await GetCacheNameToUse(availableCacheNames, doUpdateCheck);
+	const cache = await caches.open(useCacheName);
+	const cachedResponse = await cache.match(event.request);
+	
+	if (cachedResponse)
+		return cachedResponse;		// use cached response
+	
+	// We need to check if this request is to be lazy-cached. Send the request and load the lazy-load list
+	// from storage simultaneously.
+	const result = await Promise.all([fetch(event.request), ReadLazyLoadListFromStorage()]);
+	const fetchResponse = result[0];
+	const lazyLoadList = result[1];
+	
+	if (IsUrlInLazyLoadList(event.request.url, lazyLoadList))
+		await cache.put(event.request, fetchResponse.clone());		// note clone response since we also respond with it
 		
-		// Resolve with the cache name to use.
-		return Promise.resolve().then(() =>
-		{
-			// Prefer the oldest cache available. This avoids mixed-version responses by ensuring that if a new cache
-			// is created and filled due to an update check while the page is running, we keep returning resources
-			// from the original (oldest) cache only.
-			if (availableCacheNames.length === 1 || !doUpdateCheck)
-				return availableCacheNames[0];
-			
-			// We are making a navigate request with more than one cache available. Check if we can expire any old ones.
-			return clients.matchAll().then(clients =>
-			{
-				// If there are other clients open, don't expire anything yet. We don't want to delete any caches they
-				// might be using, which could cause mixed-version responses.
-				if (clients.length > GetNumberOfClientsOnReload())		// note browser differences here
-					return availableCacheNames[0];
-				
-				// Identify newest cache to use. Delete all the others.
-				let latestCacheName = availableCacheNames[availableCacheNames.length - 1];
-				console.log(CONSOLE_PREFIX + "Updating to new version");
-				
-				return Promise.all(availableCacheNames.slice(0, -1)
-									.map(c => caches.delete(c)))
-				.then(() => latestCacheName);
-			});
-		}).then(useCacheName =>
-		{
-			return caches.open(useCacheName)
-			.then(cache =>
-			{
-				return cache.match(event.request)
-				.then(response =>
-				{
-					if (response)
-					{
-						return response;
-					}
-					else
-					{
-						// We need to check if this request is to be lazy-cached. Send the request and load the lazy-load list
-						// from storage simultaneously.
-						return Promise.all([fetch(event.request), localforage.getItem(LAZYLOAD_KEYNAME)])
-						.then(result =>
-						{
-							let response = result[0];
-							let lazyLoadList = result[1];
-							
-							if (IsUrlInLazyLoadList(event.request.url, lazyLoadList))
-							{
-								// Is in the lazy-load list: add to cache and return response
-								return cache.put(event.request, response.clone())		// note clone response since we also respond with it
-								.then(() => response);
-							}
-							else
-							{
-								// Not in lazy-load list: just return the response
-								return response;
-							}
-						});
-					}
-				});
-			});
-		});
-	});
+	return fetchResponse;
+};
+
+self.addEventListener("fetch", event =>
+{
+	/** NOTE:
+	 *  This check is to prevent a bug with XMLHttpRequest where if its
+	 *  proxied with "FetchEvent.prototype.respondWith" no upload progress
+	 *  events are triggered. By returning we allow the default action to
+	 *  occur instead. Currently all cross-origin requests fall back to default.
+	 */
+	if (new URL(event.request.url).origin !== location.origin)
+		return;
+		
+	// Check for an update on navigate requests
+	const doUpdateCheck = (event.request.mode === "navigate");
+	
+	const responsePromise = HandleFetch(event, doUpdateCheck);
 
 	if (doUpdateCheck)
 	{
 		// allow the main request to complete, then check for updates
-		event.waitUntil(responsePromise
-		.then(() => UpdateCheck(false)));		// not first check
+		event.waitUntil(
+			responsePromise
+			.then(() => UpdateCheck(false))		 // not first check
+		);
 	}
 
 	event.respondWith(responsePromise);
