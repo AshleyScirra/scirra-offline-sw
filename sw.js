@@ -425,7 +425,19 @@ async function HandleFetch(event, doUpdateCheck)
 	const lazyLoadList = result[1];
 	
 	if (IsUrlInLazyLoadList(event.request.url, lazyLoadList))
-		await cache.put(event.request, fetchResponse.clone());		// note clone response since we also respond with it
+	{
+		// Handle failure writing to the cache. This can happen if the storage quota is exceeded, which is particularly
+		// likely in Safari 11.1, which appears to have very tight storage limits. Make sure even in the event of an error
+		// we continue to return the response from the fetch.
+		try {
+			// Note clone response since we also respond with it
+			await cache.put(event.request, fetchResponse.clone());
+		}
+		catch (err)
+		{
+			console.warn(CONSOLE_PREFIX + "Error caching '" + event.request.url + "': ", err);
+		}
+	}
 		
 	return fetchResponse;
 };
