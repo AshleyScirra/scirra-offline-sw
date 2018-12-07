@@ -182,7 +182,7 @@ async function GetMainPageUrl()
 	return "";		// no main page URL could be identified
 };
 
-// Hack to fetch optionally bypassing HTTP cache until fetch cache options are supported in Chrome (crbug.com/453190)
+// Fetch optionally bypassing HTTP cache using fetch cache options
 function fetchWithBypass(request, bypassCache)
 {
 	if (typeof request === "string")
@@ -190,11 +190,7 @@ function fetchWithBypass(request, bypassCache)
 	
 	if (bypassCache)
 	{
-		// bypass enabled: add a random search parameter to avoid getting a stale HTTP cache result
-		const url = new URL(request.url);
-		url.search += Math.floor(Math.random() * 1000000);
-
-		return fetch(url, {
+		return fetch(request.url, {
 			headers: request.headers,
 			mode: request.mode,
 			credentials: request.credentials,
