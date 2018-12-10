@@ -96,10 +96,7 @@ There is a caveat with this: the SW can generate messages before the page has lo
 ## Implementation notes / TODOs
 
 - writing the cache is not technically atomic, although in practice it should be OK. Caching waits for all requests to complete successfully before opening the cache and writing everything in one go, so an incomplete cache lasts for as short a time as possible. However if the SW is for some reason terminated during that writing, an incomplete cache will be left behind and offline support will not work correctly. SW does not yet have the necessary features to do this writing atomically, but apparently there is some spec work being done on this. TODO: make cache writing atomic when possible.
-- update-on-reload is hacky: Chrome reports 2 clients present when reloading, but Firefox reports 1, so we've had to resort to user agent string inspection to decide when to update.
-- support for cache-busting fetches is hacked in with random query string parameters since Chrome does not yet support fetch cache control options ([crbug.com/453190](https://crbug.com/453190)). TODO: remove the query string hack when cache control options supported.
 - BroadcastChannel messages are delayed by 3 seconds as a hack to try to make sure the client is listening. TODO: use a per-client message buffer and clients should tell the SW when they are ready to receive messages, guaranteeing clients receive all their messages with no unnecessary delay.
-- this has not yet been tested against any SW implementations other than Chrome and Firefox. Notably Microsoft and Apple are working on implementations for Edge and Safari which should be tested.
 
 Service Workers still need spec work and browsers need various bug fixes/additions to fulfil the above list.
 
