@@ -164,16 +164,17 @@ async function GetMainPageUrl()
 	for (const c of allClients)
 	{
 		// Parse off the scope from the full client URL, e.g. https://example.com/index.html -> index.html
-		let url = c.url;
+		let clientURL = new URL(c.url);
+		let url = clientURL.toString();
 		if (url.startsWith(self.registration.scope))
 			url = url.substring(self.registration.scope.length);
 		
 		if (url && url !== "/")		// ./ is also implicitly cached so don't bother returning that
 		{
 			// If the URL is solely a search string, prefix it with / to ensure it caches correctly.
-			// e.g. https://example.com/?foo=bar needs to cache as /?foo=bar, not just ?foo=bar.
+			// e.g. https://example.com/path/?foo=bar needs to cache as /path/?foo=bar, not just ?foo=bar.
 			if (url.startsWith("?"))
-				url = "/" + url;
+				url = clientURL.pathname + url;
 			
 			return url;
 		}
