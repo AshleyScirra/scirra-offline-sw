@@ -255,9 +255,11 @@ async function UpdateCheck(isFirst)
 		// Always bypass cache when requesting offline.js to make sure we find out about new versions.
 		const response = await fetchWithBypass(OFFLINE_DATA_FILE, true);
 		
-		if (!response.ok)
+		if (!response.ok) {
+			Broadcast("offline-datafile-error");
 			throw new Error(OFFLINE_DATA_FILE + " responded with " + response.status + " " + response.statusText);
-			
+		}
+		
 		const data = await response.json();
 		
 		const version = data.version;
