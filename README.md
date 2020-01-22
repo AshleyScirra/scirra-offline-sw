@@ -92,6 +92,11 @@ broadcastChannel.onmessage = function (e)
 
 There is a caveat with this: the SW can generate messages before the page has loaded enough to have created the BroadcastChannel to receive the message. To try to resolve this, there is a hack: the SW artificially delays all messages by 3 seconds to try to make sure the page has loaded enough to be listening. Then to make sure your page receives the message, you have to make sure early on in loading it loads a script which creates the BroadcastChannel and starts listening. Of course there's still no guarantee this will happen within 3 seconds. Ideally the SW would buffer messages itself until clients say they are ready for them. This is pretty tricky though (the SW APIs make this hard to design), so it's left as a TODO.
 
+The client can also send an "update-appcache" message to tell the service worker to check for an appcache update.
+
+```
+broadcastChannel.postMessage({ type: "update-appcache" });
+```
 
 ## Implementation notes / TODOs
 

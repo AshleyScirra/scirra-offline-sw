@@ -25,6 +25,20 @@ const ALSO_CLEANUP_KEEP_COUNT = 10;				// keep last N versions
 // Create a BroadcastChannel if supported.
 const broadcastChannel = (typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(BROADCASTCHANNEL_NAME));
 
+if (broadcastChannel) {
+	broadcastChannel.onmessage = function (e)
+	{
+		const data = e.data;
+		const messageType = data.type;
+
+		switch (messageType) {
+			case "update-appcache":
+				UpdateCheck(false);
+				break;
+		}
+	};
+}
+
 //////////////////////////////////////
 // Utility methods
 function PostBroadcastMessage(o)
